@@ -66,12 +66,12 @@ func (s *Store) Delete(key string) error {
 	return nil
 }
 
-func (s *Store) Has(key string) (string, bool) {
+func (s *Store) Has(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	val, ok := s.data[key]
-	return val, ok
+	_, ok := s.data[key]
+	return ok
 }
 
 func (s *Store) Recover() error {
@@ -111,4 +111,8 @@ func (s *Store) Len() int {
 	defer s.mu.Unlock()
 
 	return len(s.data)
+}
+
+func (s *Store) Close() error {
+	return s.wal.Close()
 }

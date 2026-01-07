@@ -105,3 +105,21 @@ func readUint32At(f *os.File, offset int64) (uint32, error) {
 
 	return binary.BigEndian.Uint32(buf[:]), nil
 }
+
+func (w *WAL) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.file == nil {
+		return nil
+	}
+
+	// final fsync just to be safe
+	if err := w.file.Sync(); err != nil {
+		return err
+	}
+
+	err := w.file.Close()
+	w.file = nil
+	return err
+}
