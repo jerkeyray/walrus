@@ -1,6 +1,9 @@
 package wal
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 type OpType byte // operation type
 
@@ -41,4 +44,41 @@ func encodeRecord(r *Record) ([]byte, error) {
 	offset += int(valLen)
 
 	return buf, nil
+}
+
+func decodeRecord(data []byte) (*Record, error) {
+	if len(data) < 9 {
+		return nil, fmt.Errorf("data is too short to be a record.")
+	}
+
+	offset := 0
+	op := OpType(data[offset])
+	offset += 1
+
+	keyLen := binary.BigEndian.Uint32(data[offset : offset+4])
+	offset += 4
+
+	valLen := binary.BigEndian.Uint32(data[offset : offset+4])
+	offset += 4
+
+	expected := int(keyLen + valLen)
+	if len(data[offset:]) != expected {
+		return nil, fmt.Errorf("invalid record length")
+	}
+
+	key := make([]byte, keyLen)
+	copy(key, data[offset:offset+int(keyLen)])
+	offset = int(keyLen)
+
+	value := make([]byte, valLen)
+	copy(value, data[offset:offset+int(valLen)])
+	offset += int(valLen)
+
+	rec := &Record{
+		Op:    op,
+		Key:   key,
+		Value: value,
+	}
+
+	return rec, nil
 }
