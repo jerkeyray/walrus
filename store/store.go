@@ -93,3 +93,22 @@ func (s *Store) Recover() error {
 	}
 	return nil
 }
+
+func (s *Store) Keys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	keys := make([]string, 0, len(s.data))
+	for k := range s.data {
+		keys = append(keys, k)
+	}
+
+	return keys
+}
+
+func (s *Store) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.data)
+}
