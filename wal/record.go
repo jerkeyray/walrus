@@ -40,7 +40,7 @@ func encodeRecord(r *Record) ([]byte, error) {
 	copy(buf[offset:offset+int(keyLen)], r.Key)
 	offset += int(keyLen)
 
-	copy(buf[offset:offset+int(keyLen)], r.Value)
+	copy(buf[offset:offset+int(valLen)], r.Value)
 	offset += int(valLen)
 
 	return buf, nil
