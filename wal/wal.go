@@ -123,3 +123,7 @@ func (w *WAL) Close() error {
 	w.file = nil
 	return err
 }
+
+func (w *WAL) Path() string {
+	return w.file.Name()
+}
