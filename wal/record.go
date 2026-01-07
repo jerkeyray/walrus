@@ -68,7 +68,7 @@ func decodeRecord(data []byte) (*Record, error) {
 
 	key := make([]byte, keyLen)
 	copy(key, data[offset:offset+int(keyLen)])
-	offset = int(keyLen)
+	offset += int(keyLen)
 
 	value := make([]byte, valLen)
 	copy(value, data[offset:offset+int(valLen)])

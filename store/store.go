@@ -39,6 +39,15 @@ func (s *Store) Set(key, value string) error {
 	return nil
 }
 
+// memory only, does not go through WAL
+func (s *Store) Get(key string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	val, ok := s.data[key]
+	return val, ok
+}
+
 func (s *Store) Delete(key string) error {
 	rec := &wal.Record{
 		Op:  wal.OpDelete,
@@ -55,6 +64,14 @@ func (s *Store) Delete(key string) error {
 	delete(s.data, key)
 
 	return nil
+}
+
+func (s *Store) Has(key string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	val, ok := s.data[key]
+	return val, ok
 }
 
 func (s *Store) Recover() error {
