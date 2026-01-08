@@ -10,7 +10,7 @@ import (
 )
 
 func main() {
-	// Open WAL with 100ms flush interval for good performance
+	// Open WAL with 100ms flush interval 
 	w, err := wal.Open("walrus.log", 100*time.Millisecond)
 	if err != nil {
 		log.Fatal(err)
@@ -36,7 +36,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Commit to ensure data is flushed
+	// commit to ensure data is flushed
 	if err := s.Commit(); err != nil {
 		log.Fatal(err)
 	}

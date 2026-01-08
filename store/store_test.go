@@ -478,3 +478,103 @@ func BenchmarkStoreBatch(b *testing.B) {
 		})
 	}
 }
+
+// Stress test with heavy concurrent load
+func TestStressTest(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	const (
+		numWriters  = 20
+		numReaders  = 20
+		numDeleters = 10
+		opsPerWorker = 500
+		numKeys      = 100 // Keys will be key-0 through key-99
+	)
+
+	var wg sync.WaitGroup
+	errors := make(chan error, numWriters+numReaders+numDeleters)
+
+	// Start writers
+	for i := 0; i < numWriters; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < opsPerWorker; j++ {
+				keyIdx := (id*opsPerWorker + j) % numKeys
+				key := "key-" + string(rune('0'+keyIdx%10))
+				value := "value-" + string(rune('0'+id%10)) + "-" + string(rune('0'+j%10))
+
+				if err := s.Set(key, value); err != nil {
+					errors <- err
+					return
+				}
+			}
+		}(i)
+	}
+
+	// Start readers
+	for i := 0; i < numReaders; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < opsPerWorker; j++ {
+				keyIdx := (id*opsPerWorker + j) % numKeys
+				key := "key-" + string(rune('0'+keyIdx%10))
+
+				// Do various read operations
+				s.Get(key)
+				s.Has(key)
+				s.Keys()
+				s.Len()
+			}
+		}(i)
+	}
+
+	// Start deleters
+	for i := 0; i < numDeleters; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < opsPerWorker; j++ {
+				keyIdx := (id*opsPerWorker + j) % numKeys
+				key := "key-" + string(rune('0'+keyIdx%10))
+
+				// Delete and re-add keys randomly
+				if j%2 == 0 {
+					s.Delete(key)
+				} else {
+					s.Set(key, "deleter-value")
+				}
+			}
+		}(i)
+	}
+
+	// Wait for all workers
+	wg.Wait()
+	close(errors)
+
+	// Check for errors
+	for err := range errors {
+		t.Errorf("Worker error: %v", err)
+	}
+
+	// Final commit to ensure all data is flushed
+	if err := s.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify store is still functional
+	if err := s.Set("final", "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	val, ok := s.Get("final")
+	if !ok || val != "test" {
+		t.Fatal("store not functional after stress test")
+	}
+
+	t.Logf("Stress test completed: %d writers, %d readers, %d deleters, %d ops each",
+		numWriters, numReaders, numDeleters, opsPerWorker)
+	t.Logf("Final store size: %d keys", s.Len())
+}
