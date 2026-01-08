@@ -3,16 +3,19 @@ package main
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/jerkeyray/walrus/store"
 	"github.com/jerkeyray/walrus/wal"
 )
 
 func main() {
-	w, err := wal.Open("walrus.log")
+	// Open WAL with 100ms flush interval for good performance
+	w, err := wal.Open("walrus.log", 100*time.Millisecond)
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer w.Close()
 
 	s := store.New(w)
 
@@ -21,9 +24,22 @@ func main() {
 	}
 
 	// test writes
-	s.Set("name", "jerk")
-	s.Set("Hello", "World!")
-	s.Set("coffee", "loveeee")
+	if err := s.Set("name", "jerk"); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := s.Set("Hello", "World!"); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := s.Set("coffee", "loveeee"); err != nil {
+		log.Fatal(err)
+	}
+
+	// Commit to ensure data is flushed
+	if err := s.Commit(); err != nil {
+		log.Fatal(err)
+	}
 
 	fmt.Println("DONE")
 }

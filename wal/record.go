@@ -12,6 +12,8 @@ const (
 	OpDelete OpType = 2
 )
 
+const recordMagic uint32 = 0xCAFEBABE
+
 // log entry struct
 type Record struct {
 	Op    OpType

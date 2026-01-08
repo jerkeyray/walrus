@@ -1,8 +1,9 @@
 package store
 
 import (
-	"github.com/jerkeyray/walrus/wal"
 	"sync"
+
+	"github.com/jerkeyray/walrus/wal"
 )
 
 type Store struct {
@@ -57,7 +58,7 @@ func (s *Store) Delete(key string) error {
 	if err := s.wal.Append(rec); err != nil {
 		return err
 	}
-
+	
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -116,3 +117,19 @@ func (s *Store) Len() int {
 func (s *Store) Close() error {
 	return s.wal.Close()
 }
+
+func (s *Store) Batch(fn func(s *Store) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := fn(s); err != nil {
+		return err
+	}
+
+	return s.wal.Flush()
+}
+
+func (s *Store) Commit() error {
+    return s.wal.Flush()
+}
+
