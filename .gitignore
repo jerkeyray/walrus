@@ -33,4 +33,7 @@ go.work.sum
 
 notes
 
+# Walrus specific
+walrus
 walrus-data
+.walrus_history
