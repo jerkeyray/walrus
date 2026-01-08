@@ -3,6 +3,7 @@ package wal
 import (
 	"encoding/binary"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -11,23 +12,20 @@ import (
 func newTestWAL(t *testing.T) (*WAL, func()) {
 	t.Helper()
 
-	file, err := os.CreateTemp("", "walrus-wal-test-*")
+	dir, err := os.MkdirTemp("", "walrus-wal-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	path := file.Name()
-	file.Close()
-
-	// Use fast flush interval for tests
-	w, err := Open(path, 10*time.Millisecond)
+	// Use fast flush interval and 1MB max segment size for tests
+	w, err := Open(dir, 10*time.Millisecond, 1*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	cleanup := func() {
 		w.Close()
-		os.Remove(path)
+		os.RemoveAll(dir)
 	}
 
 	return w, cleanup
@@ -58,9 +56,7 @@ func TestAppendAndReadAll(t *testing.T) {
 	}
 
 	// Flush before reading
-	if err := w.Flush(); err != nil {
-		t.Fatal(err)
-	}
+	w.Flush()
 
 	records, err := w.ReadAll()
 	if err != nil {
@@ -99,9 +95,7 @@ func TestDeleteRecord(t *testing.T) {
 	w.Append(r2)
 
 	// Flush before reading
-	if err := w.Flush(); err != nil {
-		t.Fatal(err)
-	}
+	w.Flush()
 
 	records, err := w.ReadAll()
 	if err != nil {
@@ -132,9 +126,7 @@ func TestPartialWriteTruncation(t *testing.T) {
 	}
 
 	// Flush to write to disk
-	if err := w.Flush(); err != nil {
-		t.Fatal(err)
-	}
+	w.Flush()
 
 	// now manually write garbage to simulate crash mid-write
 	w.mu.Lock()
@@ -198,9 +190,7 @@ func TestBuffering(t *testing.T) {
 	}
 
 	// Now flush
-	if err := w.Flush(); err != nil {
-		t.Fatal(err)
-	}
+	w.Flush()
 
 	// Buffer should be empty
 	w.mu.Lock()
@@ -228,17 +218,14 @@ func TestBuffering(t *testing.T) {
 
 // Test background flush goroutine
 func TestBackgroundFlush(t *testing.T) {
-	file, err := os.CreateTemp("", "walrus-wal-test-*")
+	dir, err := os.MkdirTemp("", "walrus-wal-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	path := file.Name()
-	file.Close()
-	defer os.Remove(path)
+	defer os.RemoveAll(dir)
 
 	// Use 50ms flush interval
-	w, err := Open(path, 50*time.Millisecond)
+	w, err := Open(dir, 50*time.Millisecond, 1*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,16 +291,13 @@ func TestForceFlush(t *testing.T) {
 
 // Test that Close() flushes remaining data
 func TestCloseFlushes(t *testing.T) {
-	file, err := os.CreateTemp("", "walrus-wal-test-*")
+	dir, err := os.MkdirTemp("", "walrus-wal-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer os.RemoveAll(dir)
 
-	path := file.Name()
-	file.Close()
-	defer os.Remove(path)
-
-	w, err := Open(path, 1*time.Second) // Long interval so it won't auto-flush
+	w, err := Open(dir, 1*time.Second, 1*1024*1024) // Long interval so it won't auto-flush
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +318,7 @@ func TestCloseFlushes(t *testing.T) {
 	}
 
 	// Reopen and verify data was written
-	w2, err := Open(path, 10*time.Millisecond)
+	w2, err := Open(dir, 10*time.Millisecond, 1*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,9 +372,7 @@ func TestConcurrentAppends(t *testing.T) {
 	wg.Wait()
 
 	// Flush all buffered data
-	if err := w.Flush(); err != nil {
-		t.Fatal(err)
-	}
+	w.Flush()
 
 	// Verify all records written
 	records, err := w.ReadAll()
@@ -419,26 +401,42 @@ func TestChecksumValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := w.Flush(); err != nil {
+	w.Flush()
+
+	// Corrupt the data by modifying a byte in the file
+	// Note: Can't use WriteAt on O_APPEND file, so we'll close and reopen without append
+	dir := w.dir
+	w.Close()
+
+	// Reopen the segment file for writing
+	segmentPath := filepath.Join(dir, "wal-0001.log")
+	f, err := os.OpenFile(segmentPath, os.O_RDWR, 0644)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Corrupt the data by modifying a byte in the file
-	w.mu.Lock()
-	// Get file size
-	stat, err := w.file.Stat()
+	stat, err := f.Stat()
 	if err != nil {
+		f.Close()
 		t.Fatal(err)
 	}
 
 	// Corrupt last byte (in the data section)
 	corruptByte := []byte{0xFF}
-	_, err = w.file.WriteAt(corruptByte, stat.Size()-1)
+	_, err = f.WriteAt(corruptByte, stat.Size()-1)
+	if err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Sync()
+	f.Close()
+
+	// Reopen WAL for reading
+	w, err = Open(dir, 10*time.Millisecond, 1*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.file.Sync()
-	w.mu.Unlock()
+	defer w.Close()
 
 	// Reading should detect corruption and truncate
 	records, err := w.ReadAll()
@@ -454,17 +452,14 @@ func TestChecksumValidation(t *testing.T) {
 
 // Benchmark batched writes
 func BenchmarkBatchedWrites(b *testing.B) {
-	file, err := os.CreateTemp("", "walrus-bench-*")
+	dir, err := os.MkdirTemp("", "walrus-bench-*")
 	if err != nil {
 		b.Fatal(err)
 	}
-
-	path := file.Name()
-	file.Close()
-	defer os.Remove(path)
+	defer os.RemoveAll(dir)
 
 	// Use long flush interval for batching
-	w, err := Open(path, 100*time.Millisecond)
+	w, err := Open(dir, 100*time.Millisecond, 10*1024*1024)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -490,16 +485,13 @@ func BenchmarkBatchedWrites(b *testing.B) {
 
 // Benchmark immediate writes (no batching)
 func BenchmarkImmediateWrites(b *testing.B) {
-	file, err := os.CreateTemp("", "walrus-bench-*")
+	dir, err := os.MkdirTemp("", "walrus-bench-*")
 	if err != nil {
 		b.Fatal(err)
 	}
+	defer os.RemoveAll(dir)
 
-	path := file.Name()
-	file.Close()
-	defer os.Remove(path)
-
-	w, err := Open(path, 100*time.Millisecond)
+	w, err := Open(dir, 100*time.Millisecond, 10*1024*1024)
 	if err != nil {
 		b.Fatal(err)
 	}

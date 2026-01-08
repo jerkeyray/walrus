@@ -2,42 +2,53 @@ package wal
 
 import (
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"hash/crc32"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
 type WAL struct {
 	mu     sync.Mutex
+	dir    string
 	file   *os.File // log file
 	buffer []byte   // for batching
+
+	segmentID int
+	maxSize   int64
 
 	flushEvery time.Duration
 	stopCh     chan struct{}
 	stoppedCh  chan struct{}
+
+	closed bool
 }
 
-func Open(path string, flushEvery time.Duration) (*WAL, error) {
-	// if file doesn't exist create it
-	// make it append only
-	// allow reads and writes
-	// file mode 0644: owner - read/write, others - read
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
-	if err != nil {
+func Open(dir string, flushEvery time.Duration, maxSize int64) (*WAL, error) {
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
 
 	w := &WAL{
-		file:       f,
+		dir:        dir,
 		buffer:     make([]byte, 0, 4096),
+		segmentID:  1,
+		maxSize:    maxSize,
 		flushEvery: flushEvery,
 		stopCh:     make(chan struct{}),
 		stoppedCh:  make(chan struct{}),
 	}
 
-	go w.flushLoop()
+	if err := w.openSegment(); err != nil {
+		return nil, err
+	}
 
+	go w.flushLoop()
 	return w, nil
 }
 
@@ -45,6 +56,9 @@ func (w *WAL) Append(r *Record) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if w.closed {
+		return errors.New("wal is closed")
+	}
 	data, err := encodeRecord(r)
 	if err != nil {
 		return err
@@ -74,40 +88,64 @@ func writeUint32(f *os.File, v uint32) error {
 }
 
 func (w *WAL) ReadAll() ([]*Record, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	files, err := w.segmentFiles()
+	if err != nil {
+		return nil, err
+	}
 
+	var records []*Record
+
+	for _, path := range files {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+
+		recs, err := readAllFromFile(f)
+		f.Close()
+
+		if err != nil {
+			return nil, err
+		}
+
+		records = append(records, recs...)
+	}
+
+	return records, nil
+}
+
+func readAllFromFile(f *os.File) ([]*Record, error) {
 	var records []*Record
 	var offset int64 = 0
 
 	for {
 		// read magic
-		magic, err := readUint32At(w.file, offset)
+		magic, err := readUint32At(f, offset)
 		if err != nil {
 			break
 		}
 
 		if magic != recordMagic {
 			// garbage or corruption
-			w.file.Truncate(offset)
+			f.Truncate(offset)
 			break
 		}
 
 		offset += 4
 
 		// read length
-		length, err := readUint32At(w.file, offset)
+		length, err := readUint32At(f, offset)
 		if err != nil {
-			w.file.Truncate(offset - 4)
+			f.Truncate(offset - 4)
 			break
 		}
 
 		offset += 4
 
 		// read checksum
-		expectedChecksum, err := readUint32At(w.file, offset)
+		expectedChecksum, err := readUint32At(f, offset)
 		if err != nil {
-			w.file.Truncate(offset - 8)
+			f.Truncate(offset - 8)
 			break
 		}
 
@@ -115,11 +153,11 @@ func (w *WAL) ReadAll() ([]*Record, error) {
 
 		// read data
 		data := make([]byte, length)
-		n, err := w.file.ReadAt(data, offset)
+		n, err := f.ReadAt(data, offset)
 		if err != nil || n != int(length) {
 			// partial write or corruption
 			// truncate file to last good offset
-			w.file.Truncate(offset - 12)
+			f.Truncate(offset - 12)
 			break
 		}
 
@@ -128,14 +166,14 @@ func (w *WAL) ReadAll() ([]*Record, error) {
 		// verify checksum
 		actualChecksum := crc32.ChecksumIEEE(data)
 		if actualChecksum != expectedChecksum {
-			w.file.Truncate(offset - int64(length) - 12)
+			f.Truncate(offset - int64(length) - 12)
 			break
 		}
 
 		rec, err := decodeRecord(data)
 		if err != nil {
 			// corrupt record -> truncate to before this record
-			w.file.Truncate(offset - int64(length) - 12)
+			f.Truncate(offset - int64(length) - 12)
 			break
 		}
 
@@ -156,47 +194,31 @@ func readUint32At(f *os.File, offset int64) (uint32, error) {
 }
 
 func (w *WAL) Close() error {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return nil
+	}
+	w.closed = true
+	w.mu.Unlock()
+
 	close(w.stopCh)
 	<-w.stoppedCh
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.file == nil {
-		return nil
-	}
-
-	err := w.file.Close()
-	w.file = nil
-	return err
-}
-
-func (w *WAL) Path() string {
-	if w.file == nil {
-		return ""
-	}
-	return w.file.Name()
-}
-
-func (w *WAL) Flush() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if len(w.buffer) == 0 {
-		return nil
-	}
-
-	if _, err := w.file.Write(w.buffer); err != nil {
+	if w.file != nil {
+		err := w.file.Close()
+		w.file = nil
 		return err
 	}
 
-	if err := w.file.Sync(); err != nil {
-		return err
-	}
-
-	// clear buffer
-	w.buffer = w.buffer[:0]
 	return nil
+}
+
+func (w *WAL) Flush() {
+	w.flushOnce()
 }
 
 // flush every n ms -> on stop, flush and exit
@@ -221,8 +243,31 @@ func (w *WAL) flushOnce() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if w.file == nil {
+		panic("flushOnce called with nil file")
+	}
+
 	if len(w.buffer) == 0 {
 		return
+	}
+
+	info, err := w.file.Stat()
+	if err != nil {
+		panic(err)
+	}
+	if info.Size()+int64(len(w.buffer)) > w.maxSize {
+		if err := w.file.Sync(); err != nil {
+			panic(err)
+		}
+		if err := w.file.Close(); err != nil {
+			panic(err)
+		}
+		w.file = nil
+
+		w.segmentID++
+		if err := w.openSegment(); err != nil {
+			panic(err)
+		}
 	}
 
 	if _, err := w.file.Write(w.buffer); err != nil {
@@ -237,5 +282,34 @@ func (w *WAL) flushOnce() {
 }
 
 func (w *WAL) ForceFlush() {
-    w.flushOnce()
+	w.flushOnce()
+}
+
+func (w *WAL) openSegment() error {
+	path := filepath.Join(w.dir, fmt.Sprintf("wal-%04d.log", w.segmentID))
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
+	if err != nil {
+		return err
+	}
+
+	w.file = f
+	return nil
+}
+
+func (w *WAL) segmentFiles() ([]string, error) {
+	entries, err := os.ReadDir(w.dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "wal-") {
+			files = append(files, filepath.Join(w.dir, e.Name()))
+		}
+	}
+
+	sort.Strings(files)
+	return files, nil
 }

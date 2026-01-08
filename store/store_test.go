@@ -12,16 +12,13 @@ import (
 func newTestStore(t *testing.T) (*Store, func()) {
 	t.Helper()
 
-	file, err := os.CreateTemp("", "walrus-store-test-*")
+	dir, err := os.MkdirTemp("", "walrus-store-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	path := file.Name()
-	file.Close()
-
-	// Use fast flush interval for tests
-	w, err := wal.Open(path, 10*time.Millisecond)
+	// Use fast flush interval and 1MB max segment size for tests
+	w, err := wal.Open(dir, 10*time.Millisecond, 1*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +27,7 @@ func newTestStore(t *testing.T) (*Store, func()) {
 
 	cleanup := func() {
 		s.Close()
-		os.Remove(path)
+		os.RemoveAll(dir)
 	}
 
 	return s, cleanup
@@ -128,17 +125,14 @@ func TestDelete(t *testing.T) {
 }
 
 func TestRecovery(t *testing.T) {
-	file, err := os.CreateTemp("", "walrus-store-test-*")
+	dir, err := os.MkdirTemp("", "walrus-store-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	path := file.Name()
-	file.Close()
-	defer os.Remove(path)
+	defer os.RemoveAll(dir)
 
 	// Create first store instance
-	w, err := wal.Open(path, 10*time.Millisecond)
+	w, err := wal.Open(dir, 10*time.Millisecond, 1*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +148,7 @@ func TestRecovery(t *testing.T) {
 	s.Close()
 
 	// Reopen and recover
-	w2, err := wal.Open(path, 10*time.Millisecond)
+	w2, err := wal.Open(dir, 10*time.Millisecond, 1*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,24 +240,19 @@ func TestConcurrentAccess(t *testing.T) {
 	wg.Wait()
 
 	// Final commit to ensure all data is flushed
-	if err := s.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	s.Commit()
 }
 
 // Test recovery after delete
 func TestRecoveryWithDelete(t *testing.T) {
-	file, err := os.CreateTemp("", "walrus-store-test-*")
+	dir, err := os.MkdirTemp("", "walrus-store-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	path := file.Name()
-	file.Close()
-	defer os.Remove(path)
+	defer os.RemoveAll(dir)
 
 	// Create and populate store
-	w, err := wal.Open(path, 10*time.Millisecond)
+	w, err := wal.Open(dir, 10*time.Millisecond, 1*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +267,7 @@ func TestRecoveryWithDelete(t *testing.T) {
 	s.Close()
 
 	// Reopen and recover
-	w2, err := wal.Open(path, 10*time.Millisecond)
+	w2, err := wal.Open(dir, 10*time.Millisecond, 1*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,17 +295,14 @@ func TestRecoveryWithDelete(t *testing.T) {
 
 // Test that buffered writes survive background flush
 func TestBackgroundFlushPersistence(t *testing.T) {
-	file, err := os.CreateTemp("", "walrus-store-test-*")
+	dir, err := os.MkdirTemp("", "walrus-store-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	path := file.Name()
-	file.Close()
-	defer os.Remove(path)
+	defer os.RemoveAll(dir)
 
 	// Use 50ms flush interval
-	w, err := wal.Open(path, 50*time.Millisecond)
+	w, err := wal.Open(dir, 50*time.Millisecond, 1*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +318,7 @@ func TestBackgroundFlushPersistence(t *testing.T) {
 	s.Close()
 
 	// Reopen and verify
-	w2, err := wal.Open(path, 10*time.Millisecond)
+	w2, err := wal.Open(dir, 10*time.Millisecond, 1*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,17 +337,14 @@ func TestBackgroundFlushPersistence(t *testing.T) {
 
 // Test Commit() explicitly flushes
 func TestCommit(t *testing.T) {
-	file, err := os.CreateTemp("", "walrus-store-test-*")
+	dir, err := os.MkdirTemp("", "walrus-store-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	path := file.Name()
-	file.Close()
-	defer os.Remove(path)
+	defer os.RemoveAll(dir)
 
 	// Use very long flush interval (won't auto-flush during test)
-	w, err := wal.Open(path, 10*time.Second)
+	w, err := wal.Open(dir, 10*time.Second, 1*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,14 +354,12 @@ func TestCommit(t *testing.T) {
 	s.Set("commit", "test")
 
 	// Explicitly commit
-	if err := s.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	s.Commit()
 
 	s.Close()
 
 	// Reopen and verify data was committed
-	w2, err := wal.Open(path, 10*time.Millisecond)
+	w2, err := wal.Open(dir, 10*time.Millisecond, 1*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,16 +378,13 @@ func TestCommit(t *testing.T) {
 
 // Benchmark Store operations
 func BenchmarkStoreSet(b *testing.B) {
-	file, err := os.CreateTemp("", "walrus-bench-*")
+	dir, err := os.MkdirTemp("", "walrus-bench-*")
 	if err != nil {
 		b.Fatal(err)
 	}
+	defer os.RemoveAll(dir)
 
-	path := file.Name()
-	file.Close()
-	defer os.Remove(path)
-
-	w, err := wal.Open(path, 100*time.Millisecond)
+	w, err := wal.Open(dir, 100*time.Millisecond, 10*1024*1024)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -424,16 +402,13 @@ func BenchmarkStoreSet(b *testing.B) {
 }
 
 func BenchmarkStoreGet(b *testing.B) {
-	file, err := os.CreateTemp("", "walrus-bench-*")
+	dir, err := os.MkdirTemp("", "walrus-bench-*")
 	if err != nil {
 		b.Fatal(err)
 	}
+	defer os.RemoveAll(dir)
 
-	path := file.Name()
-	file.Close()
-	defer os.Remove(path)
-
-	w, err := wal.Open(path, 100*time.Millisecond)
+	w, err := wal.Open(dir, 100*time.Millisecond, 10*1024*1024)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -450,16 +425,13 @@ func BenchmarkStoreGet(b *testing.B) {
 }
 
 func BenchmarkStoreBatch(b *testing.B) {
-	file, err := os.CreateTemp("", "walrus-bench-*")
+	dir, err := os.MkdirTemp("", "walrus-bench-*")
 	if err != nil {
 		b.Fatal(err)
 	}
+	defer os.RemoveAll(dir)
 
-	path := file.Name()
-	file.Close()
-	defer os.Remove(path)
-
-	w, err := wal.Open(path, 100*time.Millisecond)
+	w, err := wal.Open(dir, 100*time.Millisecond, 10*1024*1024)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -485,9 +457,9 @@ func TestStressTest(t *testing.T) {
 	defer cleanup()
 
 	const (
-		numWriters  = 20
-		numReaders  = 20
-		numDeleters = 10
+		numWriters   = 20
+		numReaders   = 20
+		numDeleters  = 10
 		opsPerWorker = 500
 		numKeys      = 100 // Keys will be key-0 through key-99
 	)
@@ -560,9 +532,7 @@ func TestStressTest(t *testing.T) {
 	}
 
 	// Final commit to ensure all data is flushed
-	if err := s.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	s.Commit()
 
 	// Verify store is still functional
 	if err := s.Set("final", "test"); err != nil {

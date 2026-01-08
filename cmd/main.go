@@ -10,8 +10,8 @@ import (
 )
 
 func main() {
-	// Open WAL with 100ms flush interval 
-	w, err := wal.Open("walrus.log", 100*time.Millisecond)
+	// Open WAL with 100ms flush interval and 10MB max segment size
+	w, err := wal.Open("./walrus-data", 100*time.Millisecond, 10*1024*1024)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -37,9 +37,7 @@ func main() {
 	}
 
 	// commit to ensure data is flushed
-	if err := s.Commit(); err != nil {
-		log.Fatal(err)
-	}
+	s.Commit()
 
 	fmt.Println("DONE")
 }
